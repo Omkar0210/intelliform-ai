@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Upload, X, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { X, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -10,21 +10,23 @@ interface CloudinaryUploaderProps {
   className?: string;
 }
 
+// Cloudinary configuration - uses env vars with fallbacks
+const CLOUDINARY_CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'dfiizqv1d';
+const CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'CentrAlignAI';
+
 export function CloudinaryUploader({ onUpload, onRemove, currentImage, className }: CloudinaryUploaderProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [preview, setPreview] = useState<string | null>(currentImage || null);
   const [error, setError] = useState<string | null>(null);
-
-  const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || 'dfiizqv1d';
-  const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'CentrAlignAI';
 
   const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     // Validate file type
-    if (!file.type.startsWith('image/')) {
-      setError('Please select an image file');
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
+    if (!allowedTypes.some(type => file.type.startsWith(type.split('/')[0]) || file.type === type)) {
+      setError('Please select an image or PDF file');
       return;
     }
 
@@ -37,18 +39,20 @@ export function CloudinaryUploader({ onUpload, onRemove, currentImage, className
     setError(null);
     setIsUploading(true);
 
-    // Show preview immediately
-    const reader = new FileReader();
-    reader.onload = (e) => setPreview(e.target?.result as string);
-    reader.readAsDataURL(file);
+    // Show preview immediately for images
+    if (file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onload = (e) => setPreview(e.target?.result as string);
+      reader.readAsDataURL(file);
+    }
 
     try {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('upload_preset', uploadPreset);
+      formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
 
       const response = await fetch(
-        `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+        `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`,
         {
           method: 'POST',
           body: formData
@@ -56,19 +60,22 @@ export function CloudinaryUploader({ onUpload, onRemove, currentImage, className
       );
 
       if (!response.ok) {
-        throw new Error('Upload failed');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || 'Upload failed');
       }
 
       const data = await response.json();
+      setPreview(data.secure_url);
       onUpload(data.secure_url);
     } catch (err) {
-      setError('Failed to upload image. Please try again.');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to upload file';
+      setError(errorMessage);
       setPreview(null);
       console.error('Upload error:', err);
     } finally {
       setIsUploading(false);
     }
-  }, [cloudName, uploadPreset, onUpload]);
+  }, [onUpload]);
 
   const handleRemove = () => {
     setPreview(null);
@@ -111,12 +118,12 @@ export function CloudinaryUploader({ onUpload, onRemove, currentImage, className
             <p className="mb-2 text-sm text-muted-foreground">
               <span className="font-semibold">Click to upload</span> or drag and drop
             </p>
-            <p className="text-xs text-muted-foreground">PNG, JPG, GIF up to 10MB</p>
+            <p className="text-xs text-muted-foreground">PNG, JPG, GIF, PDF up to 10MB</p>
           </div>
           <input
             type="file"
             className="hidden"
-            accept="image/*"
+            accept="image/*,.pdf"
             onChange={handleFileChange}
             disabled={isUploading}
           />

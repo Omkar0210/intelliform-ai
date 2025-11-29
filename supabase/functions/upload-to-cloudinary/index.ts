@@ -11,11 +11,12 @@ serve(async (req) => {
   }
 
   try {
-    const { file, fileName } = await req.json();
+    const { file, fileName, image, folder } = await req.json();
+    const uploadData = file || image;
     
-    if (!file) {
+    if (!uploadData) {
       return new Response(
-        JSON.stringify({ error: 'File data is required' }),
+        JSON.stringify({ error: 'File or image data is required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -25,28 +26,24 @@ serve(async (req) => {
     const CLOUDINARY_API_KEY = Deno.env.get('CLOUDINARY_API_KEY');
 
     if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
-      console.error('Cloudinary not configured');
       return new Response(
-        JSON.stringify({ error: 'Upload service not configured' }),
+        JSON.stringify({ error: 'Cloudinary not configured. Set CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log('Uploading to Cloudinary:', fileName);
+    console.log('Uploading to Cloudinary:', fileName || 'file');
 
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', uploadData);
     formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
-    if (CLOUDINARY_API_KEY) {
-      formData.append('api_key', CLOUDINARY_API_KEY);
-    }
+    
+    if (folder) formData.append('folder', folder);
+    if (CLOUDINARY_API_KEY) formData.append('api_key', CLOUDINARY_API_KEY);
 
     const uploadResponse = await fetch(
-      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
-      {
-        method: 'POST',
-        body: formData
-      }
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`,
+      { method: 'POST', body: formData }
     );
 
     if (!uploadResponse.ok) {
@@ -58,21 +55,22 @@ serve(async (req) => {
       );
     }
 
-    const uploadData = await uploadResponse.json();
-    console.log('Upload successful:', uploadData.secure_url);
+    const data = await uploadResponse.json();
+    console.log('Upload successful:', data.secure_url);
 
     return new Response(
       JSON.stringify({ 
-        url: uploadData.secure_url,
-        publicId: uploadData.public_id,
-        width: uploadData.width,
-        height: uploadData.height
+        url: data.secure_url,
+        publicId: data.public_id,
+        format: data.format,
+        width: data.width,
+        height: data.height
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error) {
-    console.error('Error in upload-to-cloudinary:', error);
+    console.error('Error:', error);
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
