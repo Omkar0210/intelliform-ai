@@ -198,7 +198,7 @@ serve(async (req) => {
               .select('title, description, schema')
               .in('id', formIds);
 
-            if (formDetails?.length > 0) {
+            if (formDetails && formDetails.length > 0) {
               const summarizedForms = formDetails.map(summarizeForm);
               let totalContext = '';
               for (const summary of summarizedForms) {
