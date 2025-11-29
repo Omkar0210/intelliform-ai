@@ -122,13 +122,15 @@ export function useForms() {
   });
 
   const generateFormWithAI = async (prompt: string): Promise<FormSchema> => {
+    // Pass userId to enable context-aware memory retrieval
     const { data, error } = await supabase.functions.invoke('generate-form', {
-      body: { prompt }
+      body: { prompt, userId: user?.id }
     });
     
     if (error) throw error;
     if (data.error) throw new Error(data.error);
     
+    console.log('Form generated with context:', data.contextUsed ? 'Yes' : 'No');
     return data.schema;
   };
 
