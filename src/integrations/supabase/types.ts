@@ -14,13 +14,123 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      forms: {
+        Row: {
+          created_at: string
+          description: string | null
+          embedding: string | null
+          id: string
+          is_published: boolean | null
+          schema: Json
+          summary: string | null
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          embedding?: string | null
+          id?: string
+          is_published?: boolean | null
+          schema: Json
+          summary?: string | null
+          title: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          embedding?: string | null
+          id?: string
+          is_published?: boolean | null
+          schema?: Json
+          summary?: string | null
+          title?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          email: string | null
+          full_name: string | null
+          id: string
+          updated_at: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id: string
+          updated_at?: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          email?: string | null
+          full_name?: string | null
+          id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      submissions: {
+        Row: {
+          form_id: string
+          id: string
+          image_urls: string[] | null
+          responses: Json
+          submitted_at: string
+        }
+        Insert: {
+          form_id: string
+          id?: string
+          image_urls?: string[] | null
+          responses: Json
+          submitted_at?: string
+        }
+        Update: {
+          form_id?: string
+          id?: string
+          image_urls?: string[] | null
+          responses?: Json
+          submitted_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "submissions_form_id_fkey"
+            columns: ["form_id"]
+            isOneToOne: false
+            referencedRelation: "forms"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      find_similar_forms: {
+        Args: {
+          match_count?: number
+          match_threshold?: number
+          p_user_id?: string
+          query_embedding: string
+        }
+        Returns: {
+          id: string
+          similarity: number
+          summary: string
+          title: string
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never
