@@ -28,15 +28,6 @@ interface SimilarForm {
   similarity: number;
 }
 
-// Get API key with fallback support
-function getLLMApiKey(): string | undefined {
-  return Deno.env.get('LLM_API_KEY') || Deno.env.get('GEMINI_API_KEY');
-}
-
-function getEmbeddingApiKey(): string | undefined {
-  return Deno.env.get('EMBEDDING_API_KEY') || Deno.env.get('LLM_API_KEY') || Deno.env.get('GEMINI_API_KEY');
-}
-
 function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return text.substring(0, maxChars) + '...';
@@ -74,6 +65,34 @@ function parseJSONSafe(text: string): FormSchema | null {
     } catch {
       return null;
     }
+  }
+}
+
+async function getEmbedding(text: string): Promise<number[] | null> {
+  const EMBEDDING_API_KEY = Deno.env.get('EMBEDDING_API_KEY') || Deno.env.get('LLM_API_KEY');
+  if (!EMBEDDING_API_KEY) return null;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${EMBEDDING_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'models/text-embedding-004',
+          content: { parts: [{ text }] }
+        })
+      }
+    );
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.embedding?.values?.slice(0, 768) || null;
+    }
+    return null;
+  } catch (error) {
+    console.error('Embedding error:', error);
+    return null;
   }
 }
 
@@ -126,93 +145,78 @@ serve(async (req) => {
       );
     }
 
-    const LLM_API_KEY = getLLMApiKey();
-    if (!LLM_API_KEY) {
+    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
+    if (!LOVABLE_API_KEY) {
       return new Response(
-        JSON.stringify({ error: 'AI service not configured. Set LLM_API_KEY or GEMINI_API_KEY.' }),
+        JSON.stringify({ error: 'AI service not configured. LOVABLE_API_KEY is missing.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const EMBEDDING_API_KEY = getEmbeddingApiKey();
     let relevantFormsContext = '';
     let contextUsed = false;
     
-    if (userId && EMBEDDING_API_KEY) {
+    // Memory retrieval using embeddings
+    if (userId) {
       console.log('Generating embedding for context retrieval...');
-      
-      const embeddingResponse = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${EMBEDDING_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'models/text-embedding-004',
-            content: { parts: [{ text: prompt }] }
-          })
+      const promptEmbedding = await getEmbedding(prompt);
+
+      if (promptEmbedding && Array.isArray(promptEmbedding)) {
+        let similarForms: SimilarForm[] = [];
+        
+        // Try Pinecone first if configured
+        if (Deno.env.get('PINECONE_API_KEY')) {
+          console.log('Querying Pinecone...');
+          similarForms = await queryPinecone(promptEmbedding, userId, 5);
         }
-      );
+        
+        // Fallback to pgvector
+        if (similarForms.length === 0) {
+          console.log('Querying pgvector...');
+          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+          const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+          const supabase = createClient(supabaseUrl, supabaseKey);
 
-      if (embeddingResponse.ok) {
-        const embeddingData = await embeddingResponse.json();
-        const promptEmbedding = embeddingData.embedding?.values;
+          const { data: pgForms, error: searchError } = await supabase
+            .rpc('find_similar_forms', {
+              query_embedding: `[${promptEmbedding.join(',')}]`,
+              match_threshold: 0.3,
+              match_count: 5,
+              p_user_id: userId
+            });
 
-        if (promptEmbedding && Array.isArray(promptEmbedding)) {
-          const finalEmbedding = promptEmbedding.slice(0, 768);
-          let similarForms: SimilarForm[] = [];
-          
-          if (Deno.env.get('PINECONE_API_KEY')) {
-            console.log('Querying Pinecone...');
-            similarForms = await queryPinecone(finalEmbedding, userId, 5);
+          if (!searchError && pgForms?.length > 0) {
+            similarForms = pgForms;
           }
+        }
+
+        if (similarForms.length > 0) {
+          console.log(`Found ${similarForms.length} relevant forms`);
           
-          if (similarForms.length === 0) {
-            console.log('Querying pgvector...');
-            const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-            const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-            const supabase = createClient(supabaseUrl, supabaseKey);
+          const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+          const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+          const supabase = createClient(supabaseUrl, supabaseKey);
+          
+          const formIds = similarForms.map((f) => f.id);
+          const { data: formDetails } = await supabase
+            .from('forms')
+            .select('title, description, schema')
+            .in('id', formIds);
 
-            const { data: pgForms, error: searchError } = await supabase
-              .rpc('find_similar_forms', {
-                query_embedding: `[${finalEmbedding.join(',')}]`,
-                match_threshold: 0.3,
-                match_count: 5,
-                p_user_id: userId
-              });
-
-            if (!searchError && pgForms?.length > 0) {
-              similarForms = pgForms;
+          if (formDetails && formDetails.length > 0) {
+            const summarizedForms = formDetails.map(summarizeForm);
+            let totalContext = '';
+            for (const summary of summarizedForms) {
+              if (totalContext.length + summary.length > 4000) break;
+              totalContext += summary + '\n';
             }
-          }
-
-          if (similarForms.length > 0) {
-            console.log(`Found ${similarForms.length} relevant forms`);
             
-            const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-            const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-            const supabase = createClient(supabaseUrl, supabaseKey);
-            
-            const formIds = similarForms.map((f) => f.id);
-            const { data: formDetails } = await supabase
-              .from('forms')
-              .select('title, description, schema')
-              .in('id', formIds);
-
-            if (formDetails && formDetails.length > 0) {
-              const summarizedForms = formDetails.map(summarizeForm);
-              let totalContext = '';
-              for (const summary of summarizedForms) {
-                if (totalContext.length + summary.length > 4000) break;
-                totalContext += summary + '\n';
-              }
-              
-              relevantFormsContext = `
+            relevantFormsContext = `
 Here is relevant user form history (top-${similarForms.length} semantic matches):
 ${totalContext}
 Use these patterns for field ordering, naming, and structure.
 `;
-              contextUsed = true;
-            }
+            contextUsed = true;
           }
         }
       }
@@ -244,40 +248,62 @@ Return ONLY valid JSON, no markdown or explanation.`;
     const truncatedPrompt = truncateText(prompt, 1000);
 
     const generateWithRetry = async (isRetry: boolean = false): Promise<FormSchema> => {
-      const retryPrompt = isRetry 
+      const userMessage = isRetry 
         ? `RETURN ONLY JSON, no markdown.\n\nGenerate form schema for: ${truncatedPrompt}`
         : `Generate form schema for: ${truncatedPrompt}`;
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${LLM_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: systemPrompt }, { text: retryPrompt }] }],
-            generationConfig: { temperature: isRetry ? 0.3 : 0.7, maxOutputTokens: 2048 }
-          })
-        }
-      );
+      console.log('Calling Lovable AI Gateway...');
+      
+      const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'google/gemini-2.5-flash',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage }
+          ],
+          max_tokens: 2048
+        })
+      });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Lovable AI error:', response.status, errorText);
+        
+        if (response.status === 429) {
+          throw new Error('Rate limit exceeded. Please try again later.');
+        }
+        if (response.status === 402) {
+          throw new Error('AI credits exhausted. Please add funds to continue.');
+        }
         throw new Error(`AI service error: ${response.status}`);
       }
 
       const data = await response.json();
-      const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const textContent = data.choices?.[0]?.message?.content;
       
       if (!textContent) throw new Error('No response from AI');
 
+      console.log('AI response received, parsing JSON...');
       const schema = parseJSONSafe(textContent);
       
       if (!schema) {
-        if (!isRetry) return generateWithRetry(true);
-        throw new Error('Failed to parse AI response');
+        if (!isRetry) {
+          console.log('JSON parsing failed, retrying with stricter prompt...');
+          return generateWithRetry(true);
+        }
+        throw new Error('Failed to parse AI response as valid JSON');
       }
 
       if (!schema.title || !schema.fields || !Array.isArray(schema.fields)) {
-        if (!isRetry) return generateWithRetry(true);
+        if (!isRetry) {
+          console.log('Invalid schema structure, retrying...');
+          return generateWithRetry(true);
+        }
         throw new Error('Invalid schema structure');
       }
 
