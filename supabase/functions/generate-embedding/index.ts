@@ -69,13 +69,8 @@ serve(async (req) => {
 
     console.log('Generated embedding with', embedding.length, 'dimensions');
 
-    // Pad or truncate to 1536 dimensions (matching existing vector column)
-    let paddedEmbedding = embedding;
-    if (embedding.length < 1536) {
-      paddedEmbedding = [...embedding, ...new Array(1536 - embedding.length).fill(0)];
-    } else if (embedding.length > 1536) {
-      paddedEmbedding = embedding.slice(0, 1536);
-    }
+    // Use 768 dimensions (Gemini text-embedding-004 output matches DB column)
+    const finalEmbedding = embedding.slice(0, 768);
 
     // Update the form with the embedding
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
@@ -85,7 +80,7 @@ serve(async (req) => {
     const { error: updateError } = await supabase
       .from('forms')
       .update({ 
-        embedding: `[${paddedEmbedding.join(',')}]`,
+        embedding: `[${finalEmbedding.join(',')}]`,
         summary: text.substring(0, 500)
       })
       .eq('id', formId);
@@ -101,7 +96,7 @@ serve(async (req) => {
     console.log('Successfully saved embedding for form:', formId);
 
     return new Response(
-      JSON.stringify({ success: true, dimensions: paddedEmbedding.length }),
+      JSON.stringify({ success: true, dimensions: finalEmbedding.length }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
