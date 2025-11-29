@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
@@ -21,6 +20,11 @@ export interface FormField {
   placeholder?: string;
   required: boolean;
   options?: string[];
+  validation?: {
+    min?: number;
+    max?: number;
+    pattern?: string;
+  };
 }
 
 export function useForms() {
@@ -50,12 +54,12 @@ export function useForms() {
       
       const { data, error } = await supabase
         .from('forms')
-        .insert({
+        .insert([{
           user_id: user.id,
           title: formData.title,
           description: formData.description,
           schema: JSON.parse(JSON.stringify(formData.schema))
-        })
+        }])
         .select()
         .single();
       
@@ -65,24 +69,25 @@ export function useForms() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['forms'] });
       
-      // Generate embedding in background
-      if (session?.access_token) {
-        generateEmbedding(data.id, `${data.title} ${data.description}`);
+      if (session?.access_token && user) {
+        generateEmbedding(data.id, `${data.title} ${data.description}`, user.id);
       }
     }
   });
 
-  const generateEmbedding = async (formId: string, text: string) => {
+  const generateEmbedding = async (formId: string, text: string, userId: string) => {
     try {
       const { error } = await supabase.functions.invoke('generate-embedding', {
-        body: { formId, text }
+        body: { formId, text, userId }
       });
       
       if (error) {
-        console.error('Failed to generate embedding:', error);
+        console.error('Embedding error:', error);
+      } else {
+        console.log('Embedding generated');
       }
     } catch (err) {
-      console.error('Embedding generation error:', err);
+      console.error('Embedding error:', err);
     }
   };
 
@@ -122,15 +127,18 @@ export function useForms() {
   });
 
   const generateFormWithAI = async (prompt: string): Promise<FormSchema> => {
-    // Pass userId to enable context-aware memory retrieval
     const { data, error } = await supabase.functions.invoke('generate-form', {
       body: { prompt, userId: user?.id }
     });
     
-    if (error) throw error;
+    if (error) {
+      console.error('Generate form error:', error);
+      throw new Error(error.message || 'Failed to generate form');
+    }
+    
     if (data.error) throw new Error(data.error);
     
-    console.log('Form generated with context:', data.contextUsed ? 'Yes' : 'No');
+    console.log('Context used:', data.contextUsed ? 'Yes' : 'No');
     return data.schema;
   };
 
